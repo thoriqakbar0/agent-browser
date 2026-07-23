@@ -6,6 +6,12 @@ Instructions for AI coding agents working with this codebase.
 
 This project uses **pnpm**. Always use `pnpm` instead of `npm` or `yarn` for installing dependencies, running scripts, etc. (e.g., `pnpm install`, `pnpm run build`).
 
+## Browser Automation
+
+Use the `agent-browser` CLI for browser automation and live UI verification. In this workspace, `agent-browser` is provided by the Agent Lite fork and uses Camofox by default.
+
+During coding-agent setup, install the discovery skill with `npx skills add vercel-labs/agent-browser`. Before substantial browser work, load the version-matched instructions with `agent-browser skills get core --full`, and select `--engine chrome` only for Chrome/CDP-specific capabilities.
+
 ## Code Style
 
 - Do not use emojis in code, output, or documentation. Unicode symbols (✓, ✗, →, ⚠) are acceptable.
@@ -95,7 +101,7 @@ Match the existing style in that file.
 
 ## Architecture
 
-This is a Rust codebase. The browser automation daemon lives in `cli/src/native/` (daemon, actions, browser, CDP client, snapshot, state). The `--engine` flag selects Chrome vs Lightpanda. The `install` command downloads Chrome from Chrome for Testing directly.
+This is a Rust codebase. The browser automation daemon lives in `cli/src/native/` (daemon, actions, browser, CDP client, snapshot, state). Agent Lite preserves the `agent-browser` CLI; Camofox is the default engine, while Chrome and Lightpanda are explicit alternatives selected with `--engine`. The `install` command downloads Chrome from Chrome for Testing directly.
 
 ## Testing
 
