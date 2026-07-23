@@ -184,23 +184,20 @@ struct CursorElementInfo {
 
 struct RoleNameTracker {
     counts: HashMap<String, usize>,
-    entries: Vec<(usize, String)>,
 }
 
 impl RoleNameTracker {
     fn new() -> Self {
         Self {
             counts: HashMap::new(),
-            entries: Vec::new(),
         }
     }
 
-    fn track(&mut self, role: &str, name: &str, node_idx: usize) -> usize {
+    fn track(&mut self, role: &str, name: &str) -> usize {
         let key = format!("{}:{}", role, name);
-        let count = self.counts.entry(key.clone()).or_insert(0);
+        let count = self.counts.entry(key).or_insert(0);
         let nth = *count;
         *count += 1;
-        self.entries.push((node_idx, key));
         nth
     }
 
@@ -385,7 +382,7 @@ pub async fn take_snapshot(
         }
 
         if should_ref {
-            let nth = tracker.track(role, &node.name, idx);
+            let nth = tracker.track(role, &node.name);
             nodes_with_refs.push((idx, nth));
         }
     }
@@ -940,7 +937,7 @@ fn promote_hidden_inputs(
 
 fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
     let mut tree_nodes: Vec<TreeNode> = Vec::with_capacity(nodes.len());
-    let mut id_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut id_to_idx: HashMap<&str, usize> = HashMap::with_capacity(nodes.len());
 
     for (i, node) in nodes.iter().enumerate() {
         let role = extract_ax_string(&node.role);
@@ -952,7 +949,7 @@ fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
 
         if (node.ignored.unwrap_or(false) && role != "RootWebArea") || role == "InlineTextBox" {
             tree_nodes.push(TreeNode::empty());
-            id_to_idx.insert(node.node_id.clone(), i);
+            id_to_idx.insert(&node.node_id, i);
             continue;
         }
 
@@ -975,16 +972,18 @@ fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
             cursor_info: None,
             url: None,
         });
-        id_to_idx.insert(node.node_id.clone(), i);
+        id_to_idx.insert(&node.node_id, i);
     }
 
     // Build parent-child relationships
+    let mut is_child = vec![false; nodes.len()];
     for (i, node) in nodes.iter().enumerate() {
         if let Some(ref child_ids) = node.child_ids {
             for cid in child_ids {
-                if let Some(&child_idx) = id_to_idx.get(cid) {
+                if let Some(&child_idx) = id_to_idx.get(cid.as_str()) {
                     tree_nodes[i].children.push(child_idx);
                     tree_nodes[child_idx].parent_idx = Some(i);
+                    is_child[child_idx] = true;
                 }
             }
         }
@@ -996,7 +995,7 @@ fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
             continue;
         }
 
-        let children_indices: Vec<usize> = tree_nodes[i].children.clone();
+        let children_indices = std::mem::take(&mut tree_nodes[i].children);
 
         // Continuous StaticText nodes at the same level are an artifact of HTML structure rather than semantic meaning.
         // They typically represent a single continuous piece of text on the page that was split due to inline elements, formatting tags, or other structural reasons.
@@ -1020,9 +1019,13 @@ fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
             // If we have a sequence of at least two StaticText
             if end > start + 1 {
                 // Collect and aggregate all names from the sequence
-                let aggregated_name: String = (start..end)
-                    .map(|idx| tree_nodes[children_indices[idx]].name.clone())
-                    .collect();
+                let total_len = (start..end)
+                    .map(|idx| tree_nodes[children_indices[idx]].name.len())
+                    .sum();
+                let mut aggregated_name = String::with_capacity(total_len);
+                for idx in start..end {
+                    aggregated_name.push_str(&tree_nodes[children_indices[idx]].name);
+                }
                 // Always aggregate into the first node of the sequence
                 tree_nodes[children_indices[start]].name = aggregated_name;
                 // Clear the rest of the nodes in the sequence (from start+1 to end-1)
@@ -1040,33 +1043,25 @@ fn build_tree(nodes: &[AXNode]) -> (Vec<TreeNode>, Vec<usize>) {
         {
             tree_nodes[children_indices[0]].clear();
         }
+
+        tree_nodes[i].children = children_indices;
     }
 
     // Set depths
-    let mut root_indices = Vec::new();
-    let children_exist: Vec<bool> = nodes.iter().map(|_| false).collect();
-    let mut is_child = children_exist;
-    for node in &tree_nodes {
-        for &child in &node.children {
-            is_child[child] = true;
-        }
+    let root_indices: Vec<usize> = is_child
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &child)| (!child).then_some(index))
+        .collect();
+    let mut depth_stack = Vec::new();
+    for &root in root_indices.iter().rev() {
+        depth_stack.push((root, 0));
     }
-    for (i, &is_c) in is_child.iter().enumerate() {
-        if !is_c {
-            root_indices.push(i);
+    while let Some((index, depth)) = depth_stack.pop() {
+        tree_nodes[index].depth = depth;
+        for child_position in (0..tree_nodes[index].children.len()).rev() {
+            depth_stack.push((tree_nodes[index].children[child_position], depth + 1));
         }
-    }
-
-    fn set_depth(nodes: &mut [TreeNode], idx: usize, depth: usize) {
-        nodes[idx].depth = depth;
-        let children: Vec<usize> = nodes[idx].children.clone();
-        for child_idx in children {
-            set_depth(nodes, child_idx, depth + 1);
-        }
-    }
-
-    for &root in &root_indices {
-        set_depth(&mut tree_nodes, root, 0);
     }
 
     (tree_nodes, root_indices)
@@ -1209,21 +1204,24 @@ fn compact_tree(tree: &str, interactive: bool) -> String {
     }
 
     let mut keep = vec![false; lines.len()];
+    let mut max_relevant_indent = None;
 
-    for (i, line) in lines.iter().enumerate() {
+    // Work backward through each root subtree. A line is retained when it is
+    // relevant itself or when a later relevant line is deeper than it. This
+    // preserves the previous ancestor-selection behavior without rescanning
+    // the whole prefix for every relevant line.
+    for (i, line) in lines.iter().enumerate().rev() {
+        let indent = count_indent(line);
         if line.contains("ref=") || line.contains(": ") {
             keep[i] = true;
-            // Mark ancestors
-            let my_indent = count_indent(line);
-            for j in (0..i).rev() {
-                let ancestor_indent = count_indent(lines[j]);
-                if ancestor_indent < my_indent {
-                    keep[j] = true;
-                    if ancestor_indent == 0 {
-                        break;
-                    }
-                }
-            }
+            max_relevant_indent =
+                Some(max_relevant_indent.map_or(indent, |current: usize| current.max(indent)));
+        } else if max_relevant_indent.is_some_and(|relevant_indent| indent < relevant_indent) {
+            keep[i] = true;
+        }
+
+        if indent == 0 {
+            max_relevant_indent = None;
         }
     }
 
@@ -1358,6 +1356,79 @@ fn collect_backend_node_ids(node: &Value, ids: &mut std::collections::HashSet<i6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn compact_tree_reference(tree: &str, interactive: bool) -> String {
+        let lines: Vec<&str> = tree.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        let mut keep = vec![false; lines.len()];
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("ref=") || line.contains(": ") {
+                keep[i] = true;
+                let my_indent = count_indent(line);
+                for j in (0..i).rev() {
+                    let ancestor_indent = count_indent(lines[j]);
+                    if ancestor_indent < my_indent {
+                        keep[j] = true;
+                        if ancestor_indent == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let output = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| keep[*i])
+            .map(|(_, line)| *line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if output.trim().is_empty() && interactive {
+            return "(no interactive elements)".to_string();
+        }
+        output
+    }
+
+    proptest! {
+        #[test]
+        fn compact_tree_matches_reference(
+            cases in prop::collection::vec(
+                (0usize..8, any::<bool>(), any::<bool>()),
+                0..256,
+            ),
+            interactive in any::<bool>(),
+        ) {
+            use std::fmt::Write as _;
+
+            let mut tree = String::new();
+            let mut previous_depth = 0;
+            for (index, (requested_depth, has_ref, has_value)) in cases.into_iter().enumerate() {
+                let depth = if index == 0 {
+                    0
+                } else {
+                    requested_depth.min(previous_depth + 1)
+                };
+                let marker = match (has_ref, has_value) {
+                    (true, true) => format!("[ref=e{index}]: value"),
+                    (true, false) => format!("[ref=e{index}]"),
+                    (false, true) => "text: value".to_string(),
+                    (false, false) => "node".to_string(),
+                };
+                writeln!(tree, "{}- {marker}", "  ".repeat(depth)).unwrap();
+                previous_depth = depth;
+            }
+
+            prop_assert_eq!(
+                compact_tree(&tree, interactive),
+                compact_tree_reference(&tree, interactive),
+            );
+        }
+    }
 
     #[test]
     fn test_interactive_roles() {
@@ -1417,9 +1488,9 @@ mod tests {
     #[test]
     fn test_role_name_tracker() {
         let mut tracker = RoleNameTracker::new();
-        assert_eq!(tracker.track("button", "Submit", 0), 0);
-        assert_eq!(tracker.track("button", "Submit", 1), 1);
-        assert_eq!(tracker.track("button", "Cancel", 2), 0);
+        assert_eq!(tracker.track("button", "Submit"), 0);
+        assert_eq!(tracker.track("button", "Submit"), 1);
+        assert_eq!(tracker.track("button", "Cancel"), 0);
 
         let dups = tracker.get_duplicates();
         assert!(dups.contains_key("button:Submit"));

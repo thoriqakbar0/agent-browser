@@ -947,7 +947,13 @@ fn main() {
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
         let session = env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string());
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        // A daemon owns one browser state and serializes commands through it. A
+        // current-thread runtime avoids one idle worker per CPU core while still
+        // supporting the nonblocking socket, CDP, stream, and signal tasks.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
         rt.block_on(native::daemon::run_daemon(&session));
         return;
     }

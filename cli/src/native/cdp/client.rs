@@ -153,12 +153,12 @@ impl CdpClient {
                     if let Some(tx) = pending.remove(&id) {
                         let _ = tx.send(parsed);
                     }
-                } else if let Some(ref method) = parsed.method {
+                } else if let Some(method) = parsed.method {
                     // Event
                     let event = CdpEvent {
-                        method: method.clone(),
-                        params: parsed.params.clone().unwrap_or(Value::Null),
-                        session_id: parsed.session_id.clone(),
+                        method,
+                        params: parsed.params.unwrap_or(Value::Null),
+                        session_id: parsed.session_id,
                     };
                     let _ = event_tx_clone.send(event);
                 }
@@ -209,7 +209,7 @@ impl CdpClient {
         params: Option<Value>,
         session_id: Option<&str>,
     ) -> Result<Value, String> {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         let cmd = CdpCommand {
             id,
@@ -305,7 +305,7 @@ impl CdpClient {
         params: Option<Value>,
         session_id: Option<&str>,
     ) -> Result<(), String> {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cmd = CdpCommand {
             id,
             method: method.to_string(),

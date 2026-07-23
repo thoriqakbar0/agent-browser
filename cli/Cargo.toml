@@ -43,6 +43,7 @@ libc = "0.2"
 windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3"
 
 [build-dependencies]
