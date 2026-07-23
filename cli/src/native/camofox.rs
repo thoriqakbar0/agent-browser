@@ -28,6 +28,7 @@ struct SnapshotResponse {
 
 #[derive(Debug, Deserialize)]
 struct EvaluateResponse {
+    #[serde(default)]
     result: Value,
 }
 
@@ -464,5 +465,13 @@ mod tests {
             normalize_snapshot_refs(snapshot),
             "- link \"Home\" [@e1]\n- text: [example]\n- button [@e22]"
         );
+    }
+
+    #[test]
+    fn treats_an_omitted_evaluate_result_as_null() {
+        let response: EvaluateResponse =
+            serde_json::from_str(r#"{"ok":true}"#).expect("successful Camofox response");
+
+        assert_eq!(response.result, Value::Null);
     }
 }
