@@ -1,62 +1,117 @@
-# agent-browser
+# agent-browser + Camofox
 
-Browser automation CLI for AI agents. Fast native Rust CLI.
+Agent-driven browser automation with a fast native Rust CLI and real graphical Firefox rendering by default.
 
 [![skills.sh](https://skills.sh/b/vercel-labs/agent-browser)](https://skills.sh/vercel-labs/agent-browser)
 
-> **Fork status:** This fork integrates [Camofox](https://github.com/thoriqakbar0/camofox-browser) as a native agent-browser backend and makes it the default. Plain `agent-browser open` now launches a graphical headless Firefox session through Camofox; use `--engine chrome` for CDP-only workflows or `--engine lightpanda` for lightweight non-graphical automation. The current Camofox path supports navigation, rendered content, JavaScript evaluation, snapshots and refs, click, fill, screenshots, history, reload, and close.
+> [!IMPORTANT]
+> This is an experimental fork of [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser). It adds [Camofox](https://github.com/thoriqakbar0/camofox-browser) as a first-class backend and makes graphical headless Firefox the default. The fork is not published as the upstream `agent-browser` npm package yet, so install it from source using the instructions below.
+
+## What changed in this fork
+
+The upstream CLI is strongest when it can talk to a Chrome DevTools Protocol endpoint. That path is still available, but it is no longer the default here. A plain command now starts a local Camofox REST server, creates an isolated Camoufox-powered Firefox tab, runs the command through that tab, and owns cleanup:
+
+```mermaid
+flowchart LR
+    A["AI agent or shell"] --> B["agent-browser CLI"]
+    B --> C["Rust session daemon"]
+    C --> D["Camofox REST backend"]
+    D --> E["Camoufox graphical Firefox"]
+    C -. "explicit --engine chrome" .-> F["Chrome via CDP"]
+    C -. "explicit --engine lightpanda" .-> G["Lightpanda via CDP"]
+```
+
+This matters because agent workflows can keep the compact `snapshot` and `@eN` interaction model while screenshots come from a real graphical renderer:
+
+```bash
+agent-browser open https://example.com
+agent-browser snapshot -i
+agent-browser click @e3
+agent-browser screenshot page.png
+agent-browser close
+```
+
+No `--engine` flag is required. `agent-browser close` deletes the Camofox user session and stops the Camofox server when agent-browser launched it.
+
+### Engine choices
+
+| Engine | Select it with | Best fit | Rendering |
+| --- | --- | --- | --- |
+| **Camofox** | Default, or `--engine camofox` | Normal agent browsing, screenshots, sites that need real Firefox behavior | Graphical Camoufox/Firefox |
+| **Chrome** | `--engine chrome` | Full agent-browser command surface, CDP tooling, extensions, profiles, tracing, WebGPU | Graphical Chromium |
+| **Lightpanda** | `--engine lightpanda` | Very low-overhead DOM automation where image fidelity is not required | Non-graphical |
+
+### Camofox command coverage
+
+| Capability | Status |
+| --- | --- |
+| Open and navigate | Supported |
+| Current URL, title, and rendered HTML | Supported |
+| JavaScript evaluation | Supported |
+| Accessibility snapshots | Supported |
+| Stable `@eN` refs from snapshots | Supported |
+| Click and fill | Supported |
+| PNG screenshots | Supported |
+| Back, forward, and reload | Supported |
+| Session cleanup and owned-server shutdown | Supported |
+| Annotated screenshots | Use Chrome |
+| Extensions, agent-browser profiles, and storage-state replay | Use Chrome |
+| Allowed-domain containment, custom launch arguments, init scripts, headed mode, and WebGPU | Use Chrome |
+| CDP-only inspection, tracing, recording, network, and profiler commands | Use Chrome |
+
+Unsupported Camofox operations fail explicitly instead of silently falling back to an engine with different behavior.
+
+### Camofox discovery and attachment
+
+agent-browser resolves the Camofox server in this order:
+
+1. Attach to `AGENT_BROWSER_CAMOFOX_URL` when it is set.
+2. Launch `AGENT_BROWSER_CAMOFOX_EXECUTABLE` when it is set.
+3. Launch a `camofox-browser` executable beside the `agent-browser` binary.
+4. Launch `camofox-browser` from `PATH`.
+
+Set `AGENT_BROWSER_CAMOFOX_ACCESS_KEY` when attaching to or launching an access-key-protected server. Spawned servers bind to `127.0.0.1` on an available port.
 
 ## Installation
 
-### Global Installation (recommended)
+### Install this fork from source
 
-Install the native Rust CLI and its default graphical backend:
-
-```bash
-npm install -g agent-browser @askjo/camofox-browser
-agent-browser open https://example.com
-```
-
-Run `agent-browser install` only when you also want the optional Chrome engine.
-
-### Project Installation (local dependency)
-
-For projects that want to pin the version in `package.json`:
-
-```bash
-npm install agent-browser @askjo/camofox-browser
-agent-browser install
-```
-
-Then use via `package.json` scripts or by invoking `agent-browser` directly.
-
-### Homebrew (macOS)
-
-```bash
-brew install agent-browser
-agent-browser install  # Download Chrome from Chrome for Testing (first time only)
-```
-
-### Cargo (Rust)
-
-```bash
-cargo install agent-browser
-agent-browser install  # Download Chrome from Chrome for Testing (first time only)
-```
-
-### From Source
-
-Requires Node.js 24+, pnpm 11+, and Rust.
+Requires Node.js 24+, pnpm 11+, and Rust:
 
 ```bash
 git clone https://github.com/thoriqakbar0/agent-browser
 cd agent-browser
 pnpm install
 pnpm build
-pnpm build:native   # Requires Rust (https://rustup.rs)
-pnpm link --global  # Makes agent-browser available globally
+pnpm build:native
+pnpm link --global
 npm install -g @askjo/camofox-browser
+
+agent-browser open https://example.com
 ```
+
+Run `agent-browser install` afterward only when you also want the optional Chrome engine.
+
+### Pair two local source checkouts
+
+For local development, keep the two forks next to each other and point agent-browser at the Camofox launcher:
+
+```bash
+git clone https://github.com/thoriqakbar0/agent-browser
+git clone https://github.com/thoriqakbar0/camofox-browser
+
+cd camofox-browser
+npm install
+
+cd ../agent-browser
+pnpm install
+pnpm build:native
+
+export AGENT_BROWSER_CAMOFOX_EXECUTABLE="$PWD/../camofox-browser/bin/camofox-browser.js"
+./cli/target/release/agent-browser open https://example.com
+```
+
+The executable can also be placed beside the built `agent-browser` binary, which is how the tested local workspace is wired.
 
 ### Linux Dependencies
 
@@ -80,9 +135,10 @@ Detects your installation method (npm, Homebrew, or Cargo) and runs the appropri
 
 ### Requirements
 
-- **Chrome** - Run `agent-browser install` to download Chrome from [Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/) (Google's official automation channel). Existing Chrome, Brave, Playwright, and Puppeteer installations are detected automatically. No Playwright or Node.js required for the daemon.
-- **Node.js 24+ and pnpm 11+** - Only needed when building from source.
-- **Rust** - Only needed when building from source (see From Source above).
+- **Camofox** - The default engine. Install `@askjo/camofox-browser` globally, place its launcher beside agent-browser, or configure its executable or server URL through the environment variables above.
+- **Node.js 22+** - Required at runtime by Camofox. Node.js 24+ and pnpm 11+ are required when building agent-browser from source.
+- **Chrome** - Optional. Run `agent-browser install` to download [Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/) when you need the CDP-only feature set.
+- **Rust** - Only needed when building from source (see Install this fork from source above).
 
 ## Quick Start
 
@@ -179,7 +235,7 @@ agent-browser read example.com/article --require-md
 agent-browser read https://example.com/article --json
 ```
 
-`read` fetches a URL without launching Chrome. Omit the URL to read the rendered DOM of the active tab in the current browser session, including browser auth state and client-side updates. Explicit URL reads send `Accept: text/markdown` by default, try the same URL with `.md` appended when the first response is not markdown, walk ancestor paths toward `/` to find the nearest `llms.txt` for a matching docs link, print markdown or plain text when available, and fall back to readable text extracted from HTML. `--llms` and `--require-md` with no URL use the active tab URL because they depend on HTTP resources. `read` does not read `llms-full.txt` unless you ask for it.
+`read` fetches a URL without launching a browser. Omit the URL to read the rendered DOM of the active tab in the current browser session, including browser auth state and client-side updates. Explicit URL reads send `Accept: text/markdown` by default, try the same URL with `.md` appended when the first response is not markdown, walk ancestor paths toward `/` to find the nearest `llms.txt` for a matching docs link, print markdown or plain text when available, and fall back to readable text extracted from HTML. `--llms` and `--require-md` with no URL use the active tab URL because they depend on HTTP resources. `read` does not read `llms-full.txt` unless you ask for it.
 
 Options: `--raw` prints the response body without HTML extraction, `--require-md` fails unless the server returns `Content-Type: text/markdown`, `--outline` prints a compact heading outline for one page, `--llms index` prints a compact nearest-ancestor `llms.txt` link list, `--llms full` reads the nearest-ancestor `llms-full.txt`, `--filter <text>` narrows page sections, llms links/sections, or outline headings, and `--timeout <ms>` changes the request timeout. Global safeguards such as `--allowed-domains`, `--content-boundaries`, and `--max-output` also apply to read fetches and output.
 
@@ -1460,7 +1516,7 @@ Connect to `ws://localhost:9223` to receive frames and send input:
 agent-browser uses a client-daemon architecture:
 
 1. **Rust CLI** - Parses commands, communicates with daemon
-2. **Rust Daemon** - Pure Rust daemon using direct CDP, no Node.js required
+2. **Rust Daemon** - Native session daemon. Chrome and Lightpanda use direct CDP; the default Camofox engine talks to the Node.js Camofox REST server.
 
 The daemon starts automatically on first command and persists between commands for fast subsequent operations. To auto-shutdown the daemon after a period of inactivity, set `AGENT_BROWSER_IDLE_TIMEOUT_MS` (value in milliseconds). When set, the daemon closes the browser and exits after receiving no commands for the specified duration.
 
