@@ -1,19 +1,45 @@
-# agent-browser + Camofox
+# Agent Lite
 
-Agent-driven browser automation with a fast native Rust CLI and real graphical Firefox rendering by default.
+A compact agent-browser fork with graphical Firefox rendering by default.
 
 [![skills.sh](https://skills.sh/b/vercel-labs/agent-browser)](https://skills.sh/vercel-labs/agent-browser)
 
 > [!IMPORTANT]
-> This is an experimental fork of [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser). It adds [Camofox](https://github.com/thoriqakbar0/camofox-browser) as a first-class backend and makes graphical headless Firefox the default. The fork is not published as the upstream `agent-browser` npm package yet, so install it from source using the instructions below.
+> Agent Lite is an experimental fork of [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser). The repository is `thoriqakbar0/agent-lite`, but the executable remains `agent-browser` so existing agent prompts and scripts keep their familiar command surface.
 
-## What changed in this fork
+Agent Lite makes [Camofox](https://github.com/thoriqakbar0/camofox-browser) its first-class, default engine. A plain `agent-browser open` launches a real Camoufox-powered Firefox page, while Chrome and Lightpanda remain explicit choices for workflows that need them.
 
-The upstream CLI is strongest when it can talk to a Chrome DevTools Protocol endpoint. That path is still available, but it is no longer the default here. A plain command now starts a local Camofox REST server, creates an isolated Camoufox-powered Firefox tab, runs the command through that tab, and owns cleanup:
+“Lite” describes the smaller default decision surface: install the paired renderer and start browsing. It is not a claim that graphical Firefox uses less memory than every alternative; choose Lightpanda when minimum resource usage matters more than rendered screenshots.
+
+## Quick start
+
+This fork is not published under the upstream `agent-browser` npm package name. Build the CLI from source and install the paired Camofox launcher:
+
+```bash
+git clone https://github.com/thoriqakbar0/agent-lite
+cd agent-lite
+pnpm install
+pnpm build
+pnpm build:native
+pnpm link --global
+
+npm install -g @askjo/camofox-browser
+
+agent-browser open https://example.com
+agent-browser snapshot -i
+agent-browser screenshot page.png
+agent-browser close
+```
+
+No engine flag is required. `close` deletes the Camofox user session and stops the server when Agent Lite launched it.
+
+## Why Agent Lite exists
+
+Upstream agent-browser is strongest through Chrome DevTools Protocol. Agent Lite keeps that path, but changes the ordinary path: the CLI starts a local Camofox REST server, creates an isolated graphical Firefox tab, routes agent commands through it, and owns cleanup.
 
 ```mermaid
 flowchart LR
-    A["AI agent or shell"] --> B["agent-browser CLI"]
+    A["AI agent or shell"] --> B["Agent Lite<br/>agent-browser CLI"]
     B --> C["Rust session daemon"]
     C --> D["Camofox REST backend"]
     D --> E["Camoufox graphical Firefox"]
@@ -21,7 +47,7 @@ flowchart LR
     C -. "explicit --engine lightpanda" .-> G["Lightpanda via CDP"]
 ```
 
-This matters because agent workflows can keep the compact `snapshot` and `@eN` interaction model while screenshots come from a real graphical renderer:
+Agents keep the compact `snapshot` and `@eN` interaction model while screenshots come from a real graphical renderer:
 
 ```bash
 agent-browser open https://example.com
@@ -31,17 +57,17 @@ agent-browser screenshot page.png
 agent-browser close
 ```
 
-No `--engine` flag is required. `agent-browser close` deletes the Camofox user session and stops the Camofox server when agent-browser launched it.
-
-### Engine choices
+## Choose an engine
 
 | Engine | Select it with | Best fit | Rendering |
 | --- | --- | --- | --- |
 | **Camofox** | Default, or `--engine camofox` | Normal agent browsing, screenshots, sites that need real Firefox behavior | Graphical Camoufox/Firefox |
 | **Chrome** | `--engine chrome` | Full agent-browser command surface, CDP tooling, extensions, profiles, tracing, WebGPU | Graphical Chromium |
-| **Lightpanda** | `--engine lightpanda` | Very low-overhead DOM automation where image fidelity is not required | Non-graphical |
+| **Lightpanda** | `--engine lightpanda` | Low-overhead DOM automation where image fidelity is not required | Non-graphical |
 
-### Camofox command coverage
+Chrome and Lightpanda do not disappear behind an automatic fallback. Selecting an engine is explicit, so a command cannot quietly change rendering or browser behavior.
+
+## Camofox command coverage
 
 | Capability | Status |
 | --- | --- |
@@ -61,9 +87,9 @@ No `--engine` flag is required. `agent-browser close` deletes the Camofox user s
 
 Unsupported Camofox operations fail explicitly instead of silently falling back to an engine with different behavior.
 
-### Camofox discovery and attachment
+## How Camofox is discovered
 
-agent-browser resolves the Camofox server in this order:
+Agent Lite resolves the Camofox server in this order:
 
 1. Attach to `AGENT_BROWSER_CAMOFOX_URL` when it is set.
 2. Launch `AGENT_BROWSER_CAMOFOX_EXECUTABLE` when it is set.
@@ -72,38 +98,18 @@ agent-browser resolves the Camofox server in this order:
 
 Set `AGENT_BROWSER_CAMOFOX_ACCESS_KEY` when attaching to or launching an access-key-protected server. Spawned servers bind to `127.0.0.1` on an available port.
 
-## Installation
+## Develop both forks locally
 
-### Install this fork from source
-
-Requires Node.js 24+, pnpm 11+, and Rust:
+Keep the two repositories next to each other and point Agent Lite at the local Camofox launcher:
 
 ```bash
-git clone https://github.com/thoriqakbar0/agent-browser
-cd agent-browser
-pnpm install
-pnpm build
-pnpm build:native
-pnpm link --global
-npm install -g @askjo/camofox-browser
-
-agent-browser open https://example.com
-```
-
-Run `agent-browser install` afterward only when you also want the optional Chrome engine.
-
-### Pair two local source checkouts
-
-For local development, keep the two forks next to each other and point agent-browser at the Camofox launcher:
-
-```bash
-git clone https://github.com/thoriqakbar0/agent-browser
+git clone https://github.com/thoriqakbar0/agent-lite
 git clone https://github.com/thoriqakbar0/camofox-browser
 
 cd camofox-browser
 npm install
 
-cd ../agent-browser
+cd ../agent-lite
 pnpm install
 pnpm build:native
 
@@ -111,9 +117,22 @@ export AGENT_BROWSER_CAMOFOX_EXECUTABLE="$PWD/../camofox-browser/bin/camofox-bro
 ./cli/target/release/agent-browser open https://example.com
 ```
 
-The executable can also be placed beside the built `agent-browser` binary, which is how the tested local workspace is wired.
+The executable can instead sit beside the built `agent-browser` binary. Run `agent-browser install` only when you also want the optional Chrome engine.
 
-### Linux Dependencies
+## Requirements
+
+- **Node.js 22+** runs Camofox. Node.js 24+ and pnpm 11+ are required to build Agent Lite from source.
+- **Rust** builds the native Agent Lite CLI.
+- **Camofox** is the default engine. Install `@askjo/camofox-browser`, place its launcher beside the CLI, or configure its executable or server URL.
+- **Chrome is optional.** Install it with `agent-browser install` when you need CDP-only features.
+
+## Current validation
+
+The paired local build has been exercised on macOS ARM64 against `https://thoriq.link`: navigation, title and URL reads, interactive snapshot refs, and a rendered PNG screenshot all completed through the default Camofox path. The full CLI test suite also passes for the integration commit.
+
+This is still an experimental fork. Packaging under its own npm name, broader platform testing, and complete parity with the Chrome command surface remain future work.
+
+## Linux dependencies
 
 On Linux, install system dependencies:
 
@@ -123,24 +142,21 @@ agent-browser install --with-deps
 
 This exits nonzero if the package manager cannot install every required browser library.
 
-### Updating
+## Updating
 
-Upgrade to the latest version:
+This fork is source-installed, so update the checkout and rebuild it:
 
 ```bash
-agent-browser upgrade
+git pull --ff-only
+pnpm install
+pnpm build
+pnpm build:native
+pnpm link --global
 ```
 
-Detects your installation method (npm, Homebrew, or Cargo) and runs the appropriate update command automatically.
+Do not use `agent-browser upgrade` for this fork yet; the upstream upgrade paths can replace it with the upstream package.
 
-### Requirements
-
-- **Camofox** - The default engine. Install `@askjo/camofox-browser` globally, place its launcher beside agent-browser, or configure its executable or server URL through the environment variables above.
-- **Node.js 22+** - Required at runtime by Camofox. Node.js 24+ and pnpm 11+ are required when building agent-browser from source.
-- **Chrome** - Optional. Run `agent-browser install` to download [Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/) when you need the CDP-only feature set.
-- **Rust** - Only needed when building from source (see Install this fork from source above).
-
-## Quick Start
+## Command examples
 
 ```bash
 agent-browser open example.com
