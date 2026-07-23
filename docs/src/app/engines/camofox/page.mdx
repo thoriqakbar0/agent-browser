@@ -33,6 +33,6 @@ Set `AGENT_BROWSER_CAMOFOX_ACCESS_KEY` when the server requires an access key.
 
 ## Supported commands
 
-Camofox currently supports navigation, URL and title queries, rendered HTML, JavaScript evaluation, snapshots and `@eN` refs, click, fill, screenshots, back, forward, reload, and close.
+Camofox currently supports navigation, URL and title queries, rendered HTML, JavaScript evaluation, snapshots and `@eN` refs, click, fill, type, key press, page scroll, screenshots, back, forward, reload, and close. Key press accepts the same modifier aliases as Chrome; type adds no per-character delay unless `--delay` is set.
 
 CDP-only commands and launch features such as extensions, agent-browser profiles, storage-state replay, allowed-domain containment, custom browser arguments, init scripts, headed mode, and WebGPU fail with a clear unsupported error. Use `--engine chrome` when a workflow needs those features.

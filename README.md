@@ -76,7 +76,7 @@ Chrome and Lightpanda do not disappear behind an automatic fallback. Selecting a
 | JavaScript evaluation | Supported |
 | Accessibility snapshots | Supported |
 | Stable `@eN` refs from snapshots | Supported |
-| Click and fill | Supported |
+| Click, fill, type, key press, and page scroll | Supported |
 | PNG screenshots | Supported |
 | Back, forward, and reload | Supported |
 | Session cleanup and owned-server shutdown | Supported |

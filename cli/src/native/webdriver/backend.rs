@@ -23,6 +23,21 @@ pub trait BrowserBackend: Send + Sync {
     async fn screenshot(&self) -> Result<String, String>;
     async fn click(&self, selector: &str) -> Result<(), String>;
     async fn fill(&self, selector: &str, value: &str) -> Result<(), String>;
+    async fn type_text(
+        &self,
+        _selector: &str,
+        _text: &str,
+        _clear: bool,
+        _delay_ms: Option<u64>,
+    ) -> Result<(), String> {
+        Err(self.unsupported_error("type"))
+    }
+    async fn press(&self, _key: &str) -> Result<(), String> {
+        Err(self.unsupported_error("press"))
+    }
+    async fn scroll(&self, _delta_x: f64, _delta_y: f64) -> Result<(), String> {
+        Err(self.unsupported_error("scroll"))
+    }
     async fn close(&mut self) -> Result<(), String>;
     async fn back(&self) -> Result<(), String>;
     async fn forward(&self) -> Result<(), String>;

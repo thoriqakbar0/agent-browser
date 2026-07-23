@@ -229,6 +229,24 @@ impl CamofoxBackend {
             json!({ "userId": self.user_id, "selector": selector })
         }
     }
+
+    fn text_input_payload(
+        &self,
+        selector: &str,
+        text: &str,
+        mode: &str,
+        delay_ms: Option<u64>,
+    ) -> Value {
+        let mut payload = self.selector_payload(selector);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("text".to_string(), Value::String(text.to_string()));
+            object.insert("mode".to_string(), Value::String(mode.to_string()));
+            if let Some(delay_ms) = delay_ms {
+                object.insert("delay".to_string(), json!(delay_ms));
+            }
+        }
+        payload
+    }
 }
 
 #[async_trait]
@@ -310,13 +328,47 @@ impl BrowserBackend for CamofoxBackend {
     }
 
     async fn fill(&self, selector: &str, value: &str) -> Result<(), String> {
-        let mut payload = self.selector_payload(selector);
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("text".to_string(), Value::String(value.to_string()));
-            object.insert("mode".to_string(), Value::String("fill".to_string()));
-        }
+        let payload = self.text_input_payload(selector, value, "fill", None);
         let _: Value = self
             .request_json(Method::POST, &self.tab_path("/type"), Some(payload))
+            .await?;
+        Ok(())
+    }
+
+    async fn type_text(
+        &self,
+        selector: &str,
+        text: &str,
+        clear: bool,
+        delay_ms: Option<u64>,
+    ) -> Result<(), String> {
+        if clear {
+            self.fill(selector, "").await?;
+        }
+
+        // Camofox defaults to 30ms per character. Chrome's type command has
+        // no delay by default, so preserve that contract and cost.
+        let payload =
+            self.text_input_payload(selector, text, "keyboard", Some(delay_ms.unwrap_or(0)));
+        let _: Value = self
+            .request_json(Method::POST, &self.tab_path("/type"), Some(payload))
+            .await?;
+        Ok(())
+    }
+
+    async fn press(&self, key: &str) -> Result<(), String> {
+        let _: Value = self
+            .request_json(
+                Method::POST,
+                &self.tab_path("/press"),
+                Some(json!({ "userId": self.user_id, "key": normalize_key_chord(key) })),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn scroll(&self, delta_x: f64, delta_y: f64) -> Result<(), String> {
+        self.evaluate_value(&format!("window.scrollBy({delta_x}, {delta_y})"))
             .await?;
         Ok(())
     }
@@ -393,6 +445,19 @@ fn is_camofox_ref(value: &str) -> bool {
     value
         .strip_prefix('e')
         .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn normalize_key_chord(key: &str) -> String {
+    key.split('+')
+        .map(|part| match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => "Control",
+            "cmd" | "command" | "meta" => "Meta",
+            "alt" => "Alt",
+            "shift" => "Shift",
+            _ => part,
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 fn resolve_camofox_executable(explicit: Option<&str>) -> String {
@@ -473,5 +538,46 @@ mod tests {
             serde_json::from_str(r#"{"ok":true}"#).expect("successful Camofox response");
 
         assert_eq!(response.result, Value::Null);
+    }
+
+    #[test]
+    fn normalizes_chrome_modifier_aliases_for_playwright() {
+        assert_eq!(normalize_key_chord("Ctrl+a"), "Control+a");
+        assert_eq!(
+            normalize_key_chord("Command+Shift+Enter"),
+            "Meta+Shift+Enter"
+        );
+        assert_eq!(normalize_key_chord("Tab"), "Tab");
+    }
+
+    #[test]
+    fn builds_native_input_payloads_with_chrome_compatible_defaults() {
+        let backend = CamofoxBackend {
+            client: Client::new(),
+            base_url: "http://127.0.0.1".to_string(),
+            user_id: "agent-browser-test".to_string(),
+            tab_id: "tab-1".to_string(),
+            access_key: None,
+            process: None,
+        };
+        assert_eq!(
+            backend.text_input_payload("@e2", "", "fill", None),
+            json!({
+                "userId": "agent-browser-test",
+                "ref": "e2",
+                "text": "",
+                "mode": "fill",
+            })
+        );
+        assert_eq!(
+            backend.text_input_payload("@e2", "hello", "keyboard", Some(0)),
+            json!({
+                "userId": "agent-browser-test",
+                "ref": "e2",
+                "text": "hello",
+                "mode": "keyboard",
+                "delay": 0,
+            })
+        );
     }
 }
