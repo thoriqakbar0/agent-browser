@@ -4378,6 +4378,221 @@ async fn e2e_snapshot_cursor_many_elements() {
     assert_success(&resp);
 }
 
+#[derive(Clone, Copy)]
+struct PerformanceDistribution {
+    min: std::time::Duration,
+    median: std::time::Duration,
+    p95: std::time::Duration,
+    max: std::time::Duration,
+}
+
+async fn measure_command_performance(
+    state: &mut DaemonState,
+    name: &str,
+    command: &Value,
+    warmup_iterations: usize,
+    measured_iterations: usize,
+) -> (PerformanceDistribution, Value) {
+    assert!(
+        measured_iterations > 0,
+        "performance measurement requires at least one sample"
+    );
+
+    for iteration in 0..warmup_iterations {
+        let mut warmup_command = command.clone();
+        warmup_command["id"] = json!(format!("{name}-warmup-{iteration}"));
+        let response = execute_command(&warmup_command, state).await;
+        assert_success(&response);
+    }
+
+    let mut samples = Vec::with_capacity(measured_iterations);
+    let mut last_response = Value::Null;
+    for iteration in 0..measured_iterations {
+        let mut measured_command = command.clone();
+        measured_command["id"] = json!(format!("{name}-measure-{iteration}"));
+        let started = std::time::Instant::now();
+        last_response = execute_command(&measured_command, state).await;
+        samples.push(started.elapsed());
+        assert_success(&last_response);
+    }
+
+    samples.sort_unstable();
+    let p95_index = ((samples.len() * 95).div_ceil(100)).saturating_sub(1);
+    let distribution = PerformanceDistribution {
+        min: samples[0],
+        median: samples[samples.len() / 2],
+        p95: samples[p95_index],
+        max: samples[samples.len() - 1],
+    };
+    println!(
+        "e2e_chrome_performance: scenario={name} samples={} median_ms={:.2} p95_ms={:.2} min_ms={:.2} max_ms={:.2}",
+        samples.len(),
+        distribution.median.as_secs_f64() * 1000.0,
+        distribution.p95.as_secs_f64() * 1000.0,
+        distribution.min.as_secs_f64() * 1000.0,
+        distribution.max.as_secs_f64() * 1000.0,
+    );
+
+    (distribution, last_response)
+}
+
+/// Provides repeatable Chrome command baselines for performance work.
+///
+/// Each scenario has its own warmup and distribution so browser startup,
+/// CDP round-trip cost, snapshot processing, and annotation work remain
+/// distinguishable. Generous p95 ceilings catch large regressions while the
+/// printed values make smaller improvements visible without flaky assertions.
+#[tokio::test]
+#[ignore]
+async fn e2e_chrome_performance_baselines() {
+    const GROUPS: usize = 200;
+    const BUTTONS_PER_GROUP: usize = 5;
+    const SNAPSHOT_P95_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+    const ANNOTATED_SCREENSHOT_P95_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let mut state = DaemonState::new();
+    let launch = execute_command(
+        &json!({
+            "id": "1",
+            "action": "launch",
+            "headless": true,
+            "engine": "chrome",
+            "args": ["--no-sandbox", "--disable-dev-shm-usage"]
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&launch);
+    assert_eq!(
+        state.engine, "chrome",
+        "test must exercise the Chrome engine"
+    );
+
+    let mut html = String::from("<html><body><main>");
+    for group in 1..=GROUPS {
+        html.push_str(&format!(
+            "<section><h2>Group {group}</h2><div><p>Context for group {group}</p>"
+        ));
+        for button in 1..=BUTTONS_PER_GROUP {
+            html.push_str(&format!("<button>Action {group}-{button}</button>"));
+        }
+        html.push_str("</div></section>");
+    }
+    html.push_str("</main></body></html>");
+
+    let set_content = execute_command(
+        &json!({ "id": "2", "action": "setcontent", "html": html }),
+        &mut state,
+    )
+    .await;
+    assert_success(&set_content);
+
+    let (evaluate, evaluate_response) = measure_command_performance(
+        &mut state,
+        "evaluate",
+        &json!({
+            "action": "evaluate",
+            "script": "document.querySelectorAll('button').length"
+        }),
+        3,
+        20,
+    )
+    .await;
+    assert_eq!(
+        get_data(&evaluate_response)["result"],
+        GROUPS * BUTTONS_PER_GROUP,
+        "evaluation should observe every fixture button"
+    );
+
+    let (compact_snapshot, compact_response) = measure_command_performance(
+        &mut state,
+        "compact-interactive-snapshot",
+        &json!({
+            "action": "snapshot",
+            "interactive": true,
+            "compact": true
+        }),
+        2,
+        10,
+    )
+    .await;
+    let compact_text = get_data(&compact_response)["snapshot"]
+        .as_str()
+        .expect("compact snapshot response should contain text");
+    assert!(
+        compact_text.contains("Action 1-1")
+            && compact_text.contains(&format!("Action {GROUPS}-{BUTTONS_PER_GROUP}")),
+        "compact snapshot should contain the first and last actions"
+    );
+
+    let (full_snapshot, full_response) = measure_command_performance(
+        &mut state,
+        "full-snapshot",
+        &json!({ "action": "snapshot" }),
+        2,
+        10,
+    )
+    .await;
+    let full_text = get_data(&full_response)["snapshot"]
+        .as_str()
+        .expect("full snapshot response should contain text");
+    assert!(
+        full_text.contains("Group 1")
+            && full_text.contains(&format!("Action {GROUPS}-{BUTTONS_PER_GROUP}")),
+        "full snapshot should contain fixture structure and actions"
+    );
+
+    let (annotated_screenshot, screenshot_response) = measure_command_performance(
+        &mut state,
+        "annotated-screenshot",
+        &json!({ "action": "screenshot", "annotate": true }),
+        1,
+        5,
+    )
+    .await;
+    let annotations = get_data(&screenshot_response)["annotations"]
+        .as_array()
+        .expect("annotated screenshot should return annotations");
+    assert!(
+        annotations.len() >= GROUPS * BUTTONS_PER_GROUP,
+        "annotated screenshot should include every fixture button, got {}",
+        annotations.len()
+    );
+
+    println!(
+        "e2e_chrome_performance: interactive_elements={} compact_snapshot_overhead_ms={:.2} full_snapshot_overhead_ms={:.2}",
+        GROUPS * BUTTONS_PER_GROUP,
+        compact_snapshot
+            .median
+            .saturating_sub(evaluate.median)
+            .as_secs_f64()
+            * 1000.0,
+        full_snapshot
+            .median
+            .saturating_sub(evaluate.median)
+            .as_secs_f64()
+            * 1000.0,
+    );
+    assert!(
+        compact_snapshot.p95 < SNAPSHOT_P95_LIMIT,
+        "Chrome compact snapshot p95 was {:?}, expected less than {SNAPSHOT_P95_LIMIT:?}",
+        compact_snapshot.p95
+    );
+    assert!(
+        full_snapshot.p95 < SNAPSHOT_P95_LIMIT,
+        "Chrome full snapshot p95 was {:?}, expected less than {SNAPSHOT_P95_LIMIT:?}",
+        full_snapshot.p95
+    );
+    assert!(
+        annotated_screenshot.p95 < ANNOTATED_SCREENSHOT_P95_LIMIT,
+        "Chrome annotated screenshot p95 was {:?}, expected less than {ANNOTATED_SCREENSHOT_P95_LIMIT:?}",
+        annotated_screenshot.p95
+    );
+
+    let close = execute_command(&json!({ "id": "99", "action": "close" }), &mut state).await;
+    assert_success(&close);
+}
+
 /// Test that InlineTextBox nodes are filtered from snapshot output while preserving
 /// the actual text content from parent elements.
 #[tokio::test]
