@@ -1,6 +1,6 @@
 # Chrome
 
-Chrome (and Chromium) is the default browser engine. agent-browser discovers, launches, and manages the Chrome process automatically via the Chrome DevTools Protocol (CDP).
+Chrome and Chromium are available through the Chrome DevTools Protocol (CDP). agent-browser discovers, launches, and manages the browser process automatically when you select the Chrome engine.
 
 ## Binary Discovery
 
@@ -48,13 +48,7 @@ If Chrome is not found, run `agent-browser install` to download Chrome from Chro
 
 ## Usage
 
-Chrome is the default engine -- no `--engine` flag is needed:
-
-```bash
-agent-browser open example.com
-```
-
-To be explicit:
+Select Chrome explicitly:
 
 ```bash
 agent-browser --engine chrome open example.com

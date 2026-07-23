@@ -24,6 +24,7 @@ export const PAGE_TITLES: Record<string, string> = {
   proxy: "Proxy",
   ios: "iOS Simulator",
   security: "Security",
+  "engines/camofox": "Camofox",
   "engines/chrome": "Chrome",
   "engines/lightpanda": "Lightpanda",
   next: "Next.js + Vercel",

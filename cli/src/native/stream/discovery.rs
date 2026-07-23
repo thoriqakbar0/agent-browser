@@ -20,7 +20,7 @@ pub(super) fn discover_sessions() -> String {
                             let engine = std::fs::read_to_string(&engine_path)
                                 .ok()
                                 .filter(|s| !s.trim().is_empty())
-                                .unwrap_or_else(|| "chrome".to_string());
+                                .unwrap_or_else(|| "camofox".to_string());
 
                             let provider_path = dir.join(format!("{}.provider", session));
                             let provider = std::fs::read_to_string(&provider_path)

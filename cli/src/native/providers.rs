@@ -204,7 +204,7 @@ pub async fn connect_plugin_provider_with_plugins_and_options(
     );
     plugin_launch_options.insert(
         "engine".to_string(),
-        json!(env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "chrome".to_string())),
+        json!(env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "camofox".to_string())),
     );
     plugin_launch_options.insert(
         "userAgent".to_string(),

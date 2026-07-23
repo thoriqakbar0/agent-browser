@@ -554,7 +554,7 @@ async fn test_daemon_state_new_defaults() {
     assert!(!state.request_tracking);
     assert!(state.tracked_requests.is_empty());
     assert!(state.active_frame_id.is_none());
-    assert!(state.webdriver_backend.is_none());
+    assert!(state.browser_backend.is_none());
     assert!(state.stream_client.is_none());
 }
 

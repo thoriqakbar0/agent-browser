@@ -1,6 +1,15 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// Backend-native accessibility snapshot projected into agent-browser's
+/// stable output shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendSnapshot {
+    pub snapshot: String,
+    pub origin: String,
+    pub refs: serde_json::Map<String, Value>,
+}
+
 /// Abstract backend for browser automation. CDP (Chromium) and WebDriver
 /// (Safari/iOS) share this interface so actions.rs can remain backend-agnostic
 /// in the future.
@@ -20,6 +29,14 @@ pub trait BrowserBackend: Send + Sync {
     async fn reload(&self) -> Result<(), String>;
     async fn get_cookies(&self) -> Result<Value, String>;
     fn backend_type(&self) -> &str;
+
+    async fn snapshot(&self) -> Result<BackendSnapshot, String> {
+        Err(self.unsupported_error("snapshot"))
+    }
+
+    async fn is_alive(&self) -> bool {
+        self.get_url().await.is_ok()
+    }
 
     fn supports(&self, feature: &str) -> bool {
         match feature {

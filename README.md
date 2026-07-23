@@ -4,23 +4,27 @@ Browser automation CLI for AI agents. Fast native Rust CLI.
 
 [![skills.sh](https://skills.sh/b/vercel-labs/agent-browser)](https://skills.sh/vercel-labs/agent-browser)
 
+> **Fork status:** This fork integrates [Camofox](https://github.com/thoriqakbar0/camofox-browser) as a native agent-browser backend and makes it the default. Plain `agent-browser open` now launches a graphical headless Firefox session through Camofox; use `--engine chrome` for CDP-only workflows or `--engine lightpanda` for lightweight non-graphical automation. The current Camofox path supports navigation, rendered content, JavaScript evaluation, snapshots and refs, click, fill, screenshots, history, reload, and close.
+
 ## Installation
 
 ### Global Installation (recommended)
 
-Installs the native Rust binary:
+Install the native Rust CLI and its default graphical backend:
 
 ```bash
-npm install -g agent-browser
-agent-browser install  # Download Chrome from Chrome for Testing (first time only)
+npm install -g agent-browser @askjo/camofox-browser
+agent-browser open https://example.com
 ```
+
+Run `agent-browser install` only when you also want the optional Chrome engine.
 
 ### Project Installation (local dependency)
 
 For projects that want to pin the version in `package.json`:
 
 ```bash
-npm install agent-browser
+npm install agent-browser @askjo/camofox-browser
 agent-browser install
 ```
 
@@ -45,13 +49,13 @@ agent-browser install  # Download Chrome from Chrome for Testing (first time onl
 Requires Node.js 24+, pnpm 11+, and Rust.
 
 ```bash
-git clone https://github.com/vercel-labs/agent-browser
+git clone https://github.com/thoriqakbar0/agent-browser
 cd agent-browser
 pnpm install
 pnpm build
 pnpm build:native   # Requires Rust (https://rustup.rs)
 pnpm link --global  # Makes agent-browser available globally
-agent-browser install
+npm install -g @askjo/camofox-browser
 ```
 
 ### Linux Dependencies
@@ -853,7 +857,7 @@ agent-browser snapshot -i -c -d 5         # Combine options
 
 The `--annotate` flag overlays numbered labels on interactive elements in the screenshot. Each label `[N]` corresponds to ref `@eN`, so the same refs work for both visual and text-based workflows.
 
-Annotated screenshots are supported on the CDP-backed browser path (Chrome/Lightpanda). The Safari/WebDriver backend does not yet support `--annotate`.
+Annotated screenshots are supported on the CDP-backed browser path (Chrome/Lightpanda). The Camofox and Safari/WebDriver backends do not yet support `--annotate`.
 
 ```bash
 agent-browser screenshot --annotate
@@ -917,7 +921,7 @@ This is useful for multimodal AI models that can reason about visual layout, unl
 | `--action-policy <path>` | Path to action policy JSON file (or `AGENT_BROWSER_ACTION_POLICY` env) |
 | `--confirm-actions <list>` | Action categories requiring confirmation (or `AGENT_BROWSER_CONFIRM_ACTIONS` env) |
 | `--confirm-interactive` | Interactive confirmation prompts; auto-denies if stdin is not a TTY (or `AGENT_BROWSER_CONFIRM_INTERACTIVE` env) |
-| `--engine <name>` | Browser engine: `chrome` (default), `lightpanda` (or `AGENT_BROWSER_ENGINE` env) |
+| `--engine <name>` | Browser engine: `camofox` (default), `chrome`, `lightpanda` (or `AGENT_BROWSER_ENGINE` env) |
 | `--no-auto-dialog` | Disable automatic dismissal of `alert`/`beforeunload` dialogs (or `AGENT_BROWSER_NO_AUTO_DIALOG` env) |
 | `--model <name>` | AI model for chat command (or `AI_GATEWAY_MODEL` env) |
 | `-v`, `--verbose` | Show tool commands and their raw output (chat) |
@@ -947,7 +951,7 @@ The dashboard displays:
 - **Live viewport**: real-time JPEG frames from the browser
 - **Activity feed**: chronological command/result stream with timing and expandable details
 - **Console output**: browser console messages (log, warn, error)
-- **Session creation**: create new sessions from the UI with local engines (Chrome, Lightpanda) or cloud providers (AgentCore, Browserbase, Browserless, Browser Use, Kernel)
+- **Session creation**: create new sessions from the UI with local engines (Camofox, Chrome, Lightpanda) or cloud providers (AgentCore, Browserbase, Browserless, Browser Use, Kernel)
 - **AI Chat**: chat with an AI assistant directly in the dashboard (requires Vercel AI Gateway configuration)
 
 ### AI Chat
@@ -1460,7 +1464,7 @@ agent-browser uses a client-daemon architecture:
 
 The daemon starts automatically on first command and persists between commands for fast subsequent operations. To auto-shutdown the daemon after a period of inactivity, set `AGENT_BROWSER_IDLE_TIMEOUT_MS` (value in milliseconds). When set, the daemon closes the browser and exits after receiving no commands for the specified duration.
 
-**Browser Engine:** Uses Chrome (from Chrome for Testing) by default. The `--engine` flag selects between `chrome` and `lightpanda`. Supported browsers: Chromium/Chrome (via CDP) and Safari (via WebDriver for iOS).
+**Browser Engine:** Uses Camofox, a graphical headless Firefox backend, by default. Install it with `npm install -g @askjo/camofox-browser`, place a `camofox-browser` executable beside `agent-browser`, or set `AGENT_BROWSER_CAMOFOX_EXECUTABLE`. Use `--engine chrome` for Chromium/Chrome via CDP, `--engine lightpanda` for the lightweight non-graphical engine, or Safari via WebDriver for iOS.
 
 ## Platforms
 

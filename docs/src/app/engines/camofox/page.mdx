@@ -1,0 +1,38 @@
+# Camofox
+
+[Camofox](https://github.com/jo-inc/camofox-browser) is the default agent-browser engine. It provides real graphical Firefox rendering through a local headless REST server.
+
+## Installation
+
+Install the Camofox server globally:
+
+```bash
+npm install -g @askjo/camofox-browser
+```
+
+agent-browser looks for `camofox-browser` beside its own executable and then on `PATH`. Set `AGENT_BROWSER_CAMOFOX_EXECUTABLE` to use another location.
+
+## Usage
+
+No engine flag is needed:
+
+```bash
+agent-browser open https://example.com
+agent-browser snapshot -i
+agent-browser screenshot page.png
+```
+
+To attach to an existing server, set its base URL:
+
+```bash
+export AGENT_BROWSER_CAMOFOX_URL=http://127.0.0.1:9377
+agent-browser open https://example.com
+```
+
+Set `AGENT_BROWSER_CAMOFOX_ACCESS_KEY` when the server requires an access key.
+
+## Supported commands
+
+Camofox currently supports navigation, URL and title queries, rendered HTML, JavaScript evaluation, snapshots and `@eN` refs, click, fill, screenshots, back, forward, reload, and close.
+
+CDP-only commands and launch features such as extensions, agent-browser profiles, storage-state replay, allowed-domain containment, custom browser arguments, init scripts, headed mode, and WebGPU fail with a clear unsupported error. Use `--engine chrome` when a workflow needs those features.

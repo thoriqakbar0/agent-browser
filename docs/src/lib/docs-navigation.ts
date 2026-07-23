@@ -65,6 +65,7 @@ export const navigation: NavSection[] = [
   {
     title: "Engines",
     items: [
+      { name: "Camofox", href: "/engines/camofox" },
       { name: "Chrome", href: "/engines/chrome" },
       { name: "Lightpanda", href: "/engines/lightpanda" },
     ],

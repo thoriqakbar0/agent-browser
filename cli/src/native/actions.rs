@@ -14,6 +14,7 @@ use crate::validation::{is_valid_session_name, session_name_error};
 
 use super::auth;
 use super::browser::{should_track_target, BrowserManager, WaitUntil};
+use super::camofox::CamofoxBackend;
 use super::cdp::chrome::LaunchOptions;
 use super::cdp::client::CdpClient;
 use super::cdp::types::{
@@ -189,6 +190,7 @@ pub struct FetchPausedRequest {
 pub enum BackendType {
     Cdp,
     WebDriver,
+    Camofox,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -312,11 +314,73 @@ fn launch_connection_is_external(
     launch_connection_identity(cdp_url, cdp_port, auto_connect, provider_name).0 != "local"
 }
 
+fn validate_camofox_launch(
+    options: &LaunchOptions,
+    allowed_domains: &[String],
+    enable_features: &[String],
+    init_script_paths: &[String],
+) -> Result<(), String> {
+    if !options.headless {
+        return Err("Headed mode is not supported with the Camofox engine".to_string());
+    }
+    if options
+        .extensions
+        .as_ref()
+        .is_some_and(|extensions| !extensions.is_empty())
+    {
+        return Err("Extensions are not supported with the Camofox engine".to_string());
+    }
+    if options.profile.is_some() {
+        return Err(
+            "agent-browser profiles are not supported with the Camofox engine; Camofox manages its own persisted profiles"
+                .to_string(),
+        );
+    }
+    if options.storage_state.is_some() {
+        return Err("Storage state is not supported with the Camofox engine".to_string());
+    }
+    if options.proxy.is_some() || options.proxy_username.is_some() {
+        return Err(
+            "agent-browser proxy flags are not yet supported with the Camofox engine".to_string(),
+        );
+    }
+    if !allowed_domains.is_empty() {
+        return Err(
+            "Allowed domains are not yet supported with the Camofox engine; refusing to launch without equivalent containment"
+                .to_string(),
+        );
+    }
+    if !options.args.is_empty() {
+        return Err(
+            "Custom browser arguments are not supported with the Camofox engine".to_string(),
+        );
+    }
+    if !enable_features.is_empty() || !init_script_paths.is_empty() {
+        return Err(
+            "Init scripts and built-in enable features are not yet supported with the Camofox engine"
+                .to_string(),
+        );
+    }
+    if options.allow_file_access
+        || options.webgpu
+        || options.ignore_https_errors
+        || options.user_agent.is_some()
+        || options.color_scheme.is_some()
+        || options.download_path.is_some()
+    {
+        return Err(
+            "One or more requested launch options are not yet supported with the Camofox engine"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub struct DaemonState {
     pub browser: Option<BrowserManager>,
     pub appium: Option<AppiumManager>,
     pub safari_driver: Option<safari::SafariDriverProcess>,
-    pub webdriver_backend: Option<super::webdriver::backend::WebDriverBackend>,
+    pub browser_backend: Option<Box<dyn BrowserBackend>>,
     pub backend_type: BackendType,
     pub ref_map: RefMap,
     pub domain_filter: Arc<RwLock<Option<DomainFilter>>>,
@@ -394,7 +458,7 @@ pub struct DaemonState {
     /// Whether browser-level auto-attach has been enabled for the current
     /// browser so top-level popups pause before their first request.
     network_auto_attach_installed: bool,
-    /// Browser engine name (e.g. "chrome", "lightpanda") for observability.
+    /// Browser engine name (e.g. "camofox", "chrome", "lightpanda") for observability.
     pub engine: String,
     /// Default timeout for wait operations, from AGENT_BROWSER_DEFAULT_TIMEOUT env var.
     pub default_timeout_ms: u64,
@@ -415,7 +479,7 @@ impl DaemonState {
             browser: None,
             appium: None,
             safari_driver: None,
-            webdriver_backend: None,
+            browser_backend: None,
             backend_type: BackendType::Cdp,
             ref_map: RefMap::new(),
             domain_filter: Arc::new(RwLock::new(
@@ -474,7 +538,7 @@ impl DaemonState {
             stream_server: None,
             launch_hash: None,
             network_auto_attach_installed: false,
-            engine: env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "chrome".to_string()),
+            engine: env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "camofox".to_string()),
             // README documents 25s, intentionally below the CLI's 30s IPC
             // read timeout so the daemon reports a proper timeout error
             // instead of the client dying with EAGAIN and retrying.
@@ -1829,7 +1893,9 @@ fn command_changes_restore_key(cmd: &Value, state: &DaemonState) -> bool {
 }
 
 fn has_active_browser_session(state: &DaemonState) -> bool {
-    state.browser.is_some() || state.active_provider_session.is_some()
+    state.browser.is_some()
+        || state.browser_backend.is_some()
+        || state.active_provider_session.is_some()
 }
 
 async fn apply_restore_config_after_confirmation(
@@ -1866,11 +1932,19 @@ async fn close_active_provider_session(state: &mut DaemonState) {
 }
 
 pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(), String> {
-    let close_error = if let Some(mut mgr) = state.browser.take() {
+    let mut close_error = if let Some(mut mgr) = state.browser.take() {
         mgr.close().await.err()
     } else {
         None
     };
+    if let Some(mut backend) = state.browser_backend.take() {
+        if let Err(error) = backend.close().await {
+            close_error = Some(match close_error {
+                Some(existing) => format!("{existing}; backend close also failed: {error}"),
+                None => error,
+            });
+        }
+    }
 
     close_active_provider_session(state).await;
     state.launch_hash = None;
@@ -2069,6 +2143,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             true
         } else if let Some(ref mut mgr) = state.browser {
             mgr.has_process_exited() || !mgr.is_connection_alive().await
+        } else if let Some(ref backend) = state.browser_backend {
+            !backend.is_alive().await
         } else {
             true
         }
@@ -2178,8 +2254,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
 
     // WebDriver backend: reject unsupported CDP-only actions
-    if matches!(state.backend_type, BackendType::WebDriver)
-        && WEBDRIVER_UNSUPPORTED_ACTIONS.contains(&action)
+    if matches!(
+        state.backend_type,
+        BackendType::WebDriver | BackendType::Camofox
+    ) && WEBDRIVER_UNSUPPORTED_ACTIONS.contains(&action)
     {
         return error_response(
             &id,
@@ -2931,7 +3009,7 @@ async fn auto_launch(
     if let Some(ref server) = state.stream_server {
         options.viewport_size = Some(server.viewport().await);
     }
-    let engine = env::var("AGENT_BROWSER_ENGINE").ok();
+    let engine = Some(env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "camofox".to_string()));
     let enable_features = launch_enable_features_from_env();
     let init_script_paths = launch_init_script_paths_from_env();
     let allowed_domains = current_allowed_domains(state).await;
@@ -2952,7 +3030,7 @@ async fn auto_launch(
         ));
     }
 
-    state.engine = engine.as_deref().unwrap_or("chrome").to_string();
+    state.engine = engine.as_deref().unwrap_or("camofox").to_string();
     write_engine_file(&state.session_id, &state.engine);
     write_extensions_file(&state.session_id);
 
@@ -2981,6 +3059,7 @@ async fn auto_launch(
         );
         state.reset_input_state();
         state.browser = Some(mgr);
+        state.backend_type = BackendType::Cdp;
         state.launch_hash = Some(hash);
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
@@ -3017,6 +3096,7 @@ async fn auto_launch(
         );
         state.reset_input_state();
         state.browser = Some(connect_auto_with_fresh_tab().await?);
+        state.backend_type = BackendType::Cdp;
         state.launch_hash = Some(hash);
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
@@ -3081,6 +3161,7 @@ async fn auto_launch(
                     );
                     state.reset_input_state();
                     state.browser = Some(mgr);
+                    state.backend_type = BackendType::Cdp;
                     state.launch_hash = Some(hash);
                     remember_active_provider_session(state, conn.session.clone(), &plugins);
                     state.subscribe_to_browser_events();
@@ -3116,6 +3197,33 @@ async fn auto_launch(
         storage_state,
     })?;
 
+    if engine.as_deref() == Some("camofox") {
+        validate_camofox_launch(
+            &options,
+            &allowed_domains,
+            &enable_features,
+            &init_script_paths,
+        )?;
+        let hash = launch_hash(
+            &options,
+            &allowed_domains,
+            &state.plugin_init_scripts,
+            &enable_features,
+            &init_script_paths,
+            engine.as_deref(),
+            "local",
+            None,
+        );
+        let backend =
+            CamofoxBackend::launch(&state.session_id, options.executable_path.as_deref()).await?;
+        state.reset_input_state();
+        state.browser_backend = Some(Box::new(backend));
+        state.backend_type = BackendType::Camofox;
+        state.launch_hash = Some(hash);
+        state.update_stream_client().await;
+        return Ok(());
+    }
+
     apply_launch_mutator_plugins(state, &mut options, plugins).await?;
     ensure_allowed_domains_supported_for_launch(AllowedDomainsLaunchSupport {
         allowed_domains: &allowed_domains,
@@ -3142,6 +3250,7 @@ async fn auto_launch(
     let mgr = BrowserManager::launch(options, engine.as_deref()).await?;
     state.reset_input_state();
     state.browser = Some(mgr);
+    state.backend_type = BackendType::Cdp;
     state.launch_hash = Some(hash);
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
@@ -3258,7 +3367,7 @@ async fn apply_launch_mutator_plugins(
         "session": state.session_id,
         "launchOptions": {
             "headless": options.headless,
-            "engine": env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "chrome".to_string()),
+            "engine": env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "camofox".to_string()),
             "args": options.args.clone(),
             "extensions": options.extensions.clone(),
             "userAgent": options.user_agent.clone(),
@@ -3692,7 +3801,8 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .get("engine")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok());
+        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok())
+        .or_else(|| Some("camofox".to_string()));
     let profile = cmd
         .get("profile")
         .and_then(|v| v.as_str())
@@ -3850,12 +3960,15 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
             || storage_state_requires_clean_launch
             || mgr.has_process_exited()
             || !mgr.is_connection_alive().await
+    } else if let Some(ref backend) = state.browser_backend {
+        state.launch_hash != Some(new_hash) || !backend.is_alive().await
     } else {
         true
     };
 
-    let had_browser_before_launch =
-        state.browser.is_some() || state.active_provider_session.is_some();
+    let had_browser_before_launch = state.browser.is_some()
+        || state.browser_backend.is_some()
+        || state.active_provider_session.is_some();
 
     if needs_relaunch {
         if had_browser_before_launch {
@@ -3892,6 +4005,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     if let Some(url) = cdp_url {
         state.reset_input_state();
         state.browser = Some(BrowserManager::connect_cdp(url).await?);
+        state.backend_type = BackendType::Cdp;
         state.launch_hash = Some(new_hash);
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
@@ -3907,6 +4021,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     if let Some(port) = cdp_port {
         state.reset_input_state();
         state.browser = Some(BrowserManager::connect_cdp(&port.to_string()).await?);
+        state.backend_type = BackendType::Cdp;
         state.launch_hash = Some(new_hash);
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
@@ -3922,6 +4037,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     if auto_connect {
         state.reset_input_state();
         state.browser = Some(connect_auto_with_fresh_tab().await?);
+        state.backend_type = BackendType::Cdp;
         state.launch_hash = Some(new_hash);
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
@@ -3972,6 +4088,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
                     Ok(mgr) => {
                         state.reset_input_state();
                         state.browser = Some(mgr);
+                        state.backend_type = BackendType::Cdp;
                         state.launch_hash = Some(new_hash);
                         remember_active_provider_session(
                             state,
@@ -4024,11 +4141,35 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         }
     }
 
-    state.engine = engine.as_deref().unwrap_or("chrome").to_string();
+    state.engine = engine.as_deref().unwrap_or("camofox").to_string();
     write_engine_file(&state.session_id, &state.engine);
     write_extensions_file_from_paths(&state.session_id, launch_options.extensions.as_deref());
     state.reset_input_state();
+
+    if engine.as_deref() == Some("camofox") {
+        validate_camofox_launch(
+            &launch_options,
+            &allowed_domains,
+            &enable_features,
+            &init_script_paths,
+        )?;
+        let backend =
+            CamofoxBackend::launch(&state.session_id, launch_options.executable_path.as_deref())
+                .await?;
+        state.browser_backend = Some(Box::new(backend));
+        state.backend_type = BackendType::Camofox;
+        state.launch_hash = Some(new_hash);
+        state.update_stream_client().await;
+        return Ok(json!({
+            "launched": true,
+            "relaunchedBrowser": had_browser_before_launch,
+            "engine": "camofox",
+            "backend": "camofox"
+        }));
+    }
+
     state.browser = Some(BrowserManager::launch(launch_options, engine.as_deref()).await?);
+    state.backend_type = BackendType::Cdp;
     state.launch_hash = Some(new_hash);
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
@@ -4075,7 +4216,7 @@ async fn launch_ios(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
     // Create a WebDriverBackend from the Appium session for common commands
     if let Some(sid) = appium.client.session_id_pub().map(String::from) {
         let wd_client = super::webdriver::client::WebDriverClient::new_with_session(4723, sid);
-        state.webdriver_backend = Some(WebDriverBackend::new(wd_client));
+        state.browser_backend = Some(Box::new(WebDriverBackend::new(wd_client)));
     }
 
     state.appium = Some(appium);
@@ -4126,7 +4267,7 @@ async fn launch_safari(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .await?;
 
     state.safari_driver = Some(driver);
-    state.webdriver_backend = Some(WebDriverBackend::new(client));
+    state.browser_backend = Some(Box::new(WebDriverBackend::new(client)));
     state.backend_type = BackendType::WebDriver;
     state.engine = "safari".to_string();
     write_engine_file(&state.session_id, &state.engine);
@@ -4156,7 +4297,7 @@ async fn handle_navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
     }
 
     // WebDriver backend path
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             state.ref_map.clear();
             wb.navigate(url).await?;
@@ -4223,7 +4364,7 @@ async fn handle_navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
 }
 
 async fn handle_url(state: &DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             let url = wb.get_url().await?;
             return Ok(json!({ "url": url }));
@@ -4323,7 +4464,7 @@ fn open_url_in_browser(url: &str) {
 }
 
 async fn handle_title(state: &DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             let title = wb.get_title().await?;
             return Ok(json!({ "title": title }));
@@ -4335,7 +4476,7 @@ async fn handle_title(state: &DaemonState) -> Result<Value, String> {
 }
 
 async fn handle_content(state: &DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             let html = wb.get_content().await?;
             let url = wb.get_url().await.unwrap_or_default();
@@ -4349,7 +4490,7 @@ async fn handle_content(state: &DaemonState) -> Result<Value, String> {
 }
 
 async fn handle_evaluate(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             let script = cmd
                 .get("script")
@@ -4385,10 +4526,10 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     }
 
     // Close WebDriver sessions
-    if let Some(ref mut wb) = state.webdriver_backend {
+    if let Some(ref mut wb) = state.browser_backend {
         let _ = wb.close().await;
     }
-    state.webdriver_backend = None;
+    state.browser_backend = None;
     if let Some(ref mut appium) = state.appium {
         let _ = appium.close().await;
     }
@@ -4430,6 +4571,26 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 async fn handle_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if let Some(ref backend) = state.browser_backend {
+        if state.browser.is_none() {
+            if cmd.get("selector").is_some()
+                || cmd.get("maxDepth").is_some()
+                || cmd.get("urls").and_then(Value::as_bool).unwrap_or(false)
+            {
+                return Err(
+                    "Camofox snapshots do not yet support selector, depth, or URL filtering"
+                        .to_string(),
+                );
+            }
+            let snapshot = backend.snapshot().await?;
+            return Ok(json!({
+                "snapshot": snapshot.snapshot,
+                "origin": snapshot.origin,
+                "refs": snapshot.refs
+            }));
+        }
+    }
+
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
 
@@ -4487,13 +4648,13 @@ async fn handle_screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             if annotate {
-                return Err(
-                    "Annotated screenshots are not yet implemented on the WebDriver backend"
-                        .to_string(),
-                );
+                return Err(format!(
+                    "Annotated screenshots are not yet implemented on the {} backend",
+                    wb.backend_type()
+                ));
             }
 
             let base64_data = wb.screenshot().await?;
@@ -4595,7 +4756,7 @@ async fn handle_click(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         .and_then(|v| v.as_str())
         .ok_or("Missing 'selector' parameter")?;
 
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             wb.click(selector).await?;
             return Ok(json!({ "clicked": selector }));
@@ -4729,7 +4890,7 @@ async fn handle_fill(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
         .and_then(|v| v.as_str())
         .ok_or("Missing 'value' parameter")?;
 
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             wb.fill(selector, value).await?;
             return Ok(json!({ "filled": selector }));
@@ -5127,7 +5288,7 @@ async fn handle_ischecked(cmd: &Value, state: &mut DaemonState) -> Result<Value,
 }
 
 async fn handle_back(state: &mut DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             wb.back().await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -5145,7 +5306,7 @@ async fn handle_back(state: &mut DaemonState) -> Result<Value, String> {
 }
 
 async fn handle_forward(state: &mut DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             wb.forward().await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -5163,7 +5324,7 @@ async fn handle_forward(state: &mut DaemonState) -> Result<Value, String> {
 }
 
 async fn handle_reload(state: &mut DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             wb.reload().await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -5396,7 +5557,7 @@ async fn poll_until_true(
 // ---------------------------------------------------------------------------
 
 async fn handle_cookies_get(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    if let Some(ref wb) = state.webdriver_backend {
+    if let Some(ref wb) = state.browser_backend {
         if state.browser.is_none() {
             let cookies_list = wb.get_cookies().await?;
             return Ok(json!({ "cookies": cookies_list }));
@@ -11996,12 +12157,12 @@ mod tests {
         .await;
         let mut state = DaemonState::new();
         state.backend_type = BackendType::WebDriver;
-        state.webdriver_backend = Some(WebDriverBackend::new(
+        state.browser_backend = Some(Box::new(WebDriverBackend::new(
             crate::native::webdriver::client::WebDriverClient::new_with_session(
                 port,
                 "test-session".to_string(),
             ),
-        ));
+        )));
         let cmd = json!({
             "action": "read",
             "id": "read-active-tab-denied",
@@ -12030,12 +12191,12 @@ mod tests {
             *df = Some(DomainFilter::new("example.com"));
         }
         state.backend_type = BackendType::WebDriver;
-        state.webdriver_backend = Some(WebDriverBackend::new(
+        state.browser_backend = Some(Box::new(WebDriverBackend::new(
             crate::native::webdriver::client::WebDriverClient::new_with_session(
                 port,
                 "test-session".to_string(),
             ),
-        ));
+        )));
         let cmd = json!({
             "action": "read",
             "id": "read-active-tab-denied"
@@ -12065,12 +12226,12 @@ mod tests {
         .await;
         let mut state = DaemonState::new();
         state.backend_type = BackendType::WebDriver;
-        state.webdriver_backend = Some(WebDriverBackend::new(
+        state.browser_backend = Some(Box::new(WebDriverBackend::new(
             crate::native::webdriver::client::WebDriverClient::new_with_session(
                 port,
                 "test-session".to_string(),
             ),
-        ));
+        )));
         let cmd = json!({
             "action": "read",
             "id": "read-active-tab-allowed",

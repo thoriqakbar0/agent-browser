@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/context-menu";
 
 const ENGINE_LOGOS: Record<string, string> = {
+  camofox: "https://svgl.app/library/firefox.svg",
   chrome: "https://svgl.app/library/chrome.svg",
   firefox: "https://svgl.app/library/firefox.svg",
   safari: "https://svgl.app/library/safari.svg",
@@ -63,9 +64,10 @@ const PROVIDER_LOGOS: Record<string, string> = {
   kernel: "/providers/kernel.svg",
 };
 
-const SUPPORTED_ENGINES = ["chrome", "lightpanda"] as const;
+const SUPPORTED_ENGINES = ["camofox", "chrome", "lightpanda"] as const;
 
 const BROWSER_OPTIONS: { id: string; label: string; engine?: string; provider?: string }[] = [
+  { id: "camofox", label: "Camofox (Firefox)", engine: "camofox" },
   { id: "chrome", label: "Chrome", engine: "chrome" },
   { id: "lightpanda", label: "Lightpanda", engine: "lightpanda" },
   { id: "agentcore", label: "AgentCore", provider: "agentcore" },
@@ -364,7 +366,7 @@ export function SessionTree() {
   const [newSessionOpen, setNewSessionOpen] = useAtom(newSessionDialogAtom);
   const [closeAllOpen, setCloseAllOpen] = useState(false);
   const [newSessionName, setNewSessionName] = useState("");
-  const [newSessionBrowser, setNewSessionBrowser] = useState("chrome");
+  const [newSessionBrowser, setNewSessionBrowser] = useState("camofox");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -386,7 +388,7 @@ export function SessionTree() {
     const option = BROWSER_OPTIONS.find((o) => o.id === newSessionBrowser);
     const error = await dispatchCreateSession({
       name,
-      engine: option?.engine ?? "chrome",
+      engine: option?.engine ?? "camofox",
       provider: option?.provider,
     });
     setCreating(false);
