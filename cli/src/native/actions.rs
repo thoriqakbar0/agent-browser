@@ -4926,8 +4926,6 @@ async fn handle_fill(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
 }
 
 async fn handle_type(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
     let selector = cmd
         .get("selector")
         .and_then(|v| v.as_str())
@@ -4939,6 +4937,15 @@ async fn handle_type(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
     let clear = cmd.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
     let delay = cmd.get("delay").and_then(|v| v.as_u64());
 
+    if let Some(ref backend) = state.browser_backend {
+        if state.browser.is_none() {
+            backend.type_text(selector, text, clear, delay).await?;
+            return Ok(json!({ "typed": text }));
+        }
+    }
+
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let session_id = mgr.active_session_id()?.to_string();
     interaction::type_text(
         &mgr.client,
         &session_id,
@@ -4954,13 +4961,20 @@ async fn handle_type(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
 }
 
 async fn handle_press(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
     let key = cmd
         .get("key")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'key' parameter")?;
 
+    if let Some(ref backend) = state.browser_backend {
+        if state.browser.is_none() {
+            backend.press(key).await?;
+            return Ok(json!({ "pressed": key }));
+        }
+    }
+
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let session_id = mgr.active_session_id()?.to_string();
     // Parse modifier+key chords like "Control+a", "Shift+Enter", "Control+Shift+a"
     let (actual_key, modifiers) = parse_key_chord(key);
 
@@ -5028,8 +5042,6 @@ async fn handle_hover(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
 }
 
 async fn handle_scroll(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
     let selector = cmd.get("selector").and_then(|v| v.as_str());
 
     let (mut dx, mut dy) = (
@@ -5048,6 +5060,21 @@ async fn handle_scroll(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         }
     }
 
+    if let Some(ref backend) = state.browser_backend {
+        if state.browser.is_none() {
+            if selector.is_some() {
+                return Err(format!(
+                    "Element scrolling is not supported on the {} backend",
+                    backend.backend_type()
+                ));
+            }
+            backend.scroll(dx, dy).await?;
+            return Ok(json!({ "scrolled": true }));
+        }
+    }
+
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let session_id = mgr.active_session_id()?.to_string();
     interaction::scroll(
         &mgr.client,
         &session_id,
