@@ -586,30 +586,34 @@ async fn test_request_tracking_state() {
     assert!(!state.request_tracking);
     assert!(state.tracked_requests.is_empty());
 
-    state.tracked_requests.push(super::actions::TrackedRequest {
-        url: "https://example.com".to_string(),
-        method: "GET".to_string(),
-        headers: json!({}),
-        timestamp: 1,
-        resource_type: "Document".to_string(),
-        request_id: "1.1".to_string(),
-        post_data: None,
-        status: None,
-        response_headers: None,
-        mime_type: None,
-    });
-    state.tracked_requests.push(super::actions::TrackedRequest {
-        url: "https://other.com".to_string(),
-        method: "POST".to_string(),
-        headers: json!({}),
-        timestamp: 2,
-        resource_type: "XHR".to_string(),
-        request_id: "1.2".to_string(),
-        post_data: None,
-        status: None,
-        response_headers: None,
-        mime_type: None,
-    });
+    state
+        .tracked_requests
+        .push_back(super::actions::TrackedRequest {
+            url: "https://example.com".to_string(),
+            method: "GET".to_string(),
+            headers: json!({}),
+            timestamp: 1,
+            resource_type: "Document".to_string(),
+            request_id: "1.1".to_string(),
+            post_data: None,
+            status: None,
+            response_headers: None,
+            mime_type: None,
+        });
+    state
+        .tracked_requests
+        .push_back(super::actions::TrackedRequest {
+            url: "https://other.com".to_string(),
+            method: "POST".to_string(),
+            headers: json!({}),
+            timestamp: 2,
+            resource_type: "XHR".to_string(),
+            request_id: "1.2".to_string(),
+            post_data: None,
+            status: None,
+            response_headers: None,
+            mime_type: None,
+        });
     assert_eq!(state.tracked_requests.len(), 2);
 
     // Filter

@@ -768,7 +768,7 @@ impl BrowserManager {
         &self,
         wait_until: WaitUntil,
         session_id: &str,
-        rx: &mut broadcast::Receiver<CdpEvent>,
+        rx: &mut broadcast::Receiver<Arc<CdpEvent>>,
     ) -> Result<(), String> {
         let event_name = match wait_until {
             WaitUntil::Load => "Page.loadEventFired",
@@ -802,7 +802,7 @@ impl BrowserManager {
     async fn wait_for_network_idle(
         &self,
         session_id: &str,
-        rx: &mut broadcast::Receiver<CdpEvent>,
+        rx: &mut broadcast::Receiver<Arc<CdpEvent>>,
     ) -> Result<(), String> {
         let timeout = tokio::time::Duration::from_millis(self.default_timeout_ms);
         poll_network_idle(session_id, rx, timeout).await
@@ -1603,7 +1603,7 @@ impl BrowserManager {
 /// 500 ms, or `Err` if `overall_timeout` elapses first.
 async fn poll_network_idle(
     session_id: &str,
-    rx: &mut broadcast::Receiver<CdpEvent>,
+    rx: &mut broadcast::Receiver<Arc<CdpEvent>>,
     overall_timeout: tokio::time::Duration,
 ) -> Result<(), String> {
     let pending = Arc::new(Mutex::new(HashSet::<String>::new()));
@@ -2222,12 +2222,12 @@ mod tests {
     // poll_network_idle tests
     // -----------------------------------------------------------------------
 
-    fn cdp_event(method: &str, session_id: &str, params: Value) -> CdpEvent {
-        CdpEvent {
+    fn cdp_event(method: &str, session_id: &str, params: Value) -> Arc<CdpEvent> {
+        Arc::new(CdpEvent {
             method: method.to_string(),
             params,
             session_id: Some(session_id.to_string()),
-        }
+        })
     }
 
     /// Regression test for #846: when no network events arrive at all (e.g.
@@ -2235,7 +2235,7 @@ mod tests {
     /// instantly.  It should observe at least 500 ms of idle before resolving.
     #[tokio::test]
     async fn test_network_idle_no_events_does_not_return_instantly() {
-        let (tx, mut rx) = broadcast::channel::<CdpEvent>(16);
+        let (tx, mut rx) = broadcast::channel::<Arc<CdpEvent>>(16);
         let session = "s1";
 
         let start = tokio::time::Instant::now();
@@ -2261,7 +2261,7 @@ mod tests {
     /// request completes and 500 ms of silence passes.
     #[tokio::test]
     async fn test_network_idle_after_requests_complete() {
-        let (tx, mut rx) = broadcast::channel::<CdpEvent>(16);
+        let (tx, mut rx) = broadcast::channel::<Arc<CdpEvent>>(16);
         let session = "s1";
 
         let _keep_alive = tx.clone();
@@ -2300,7 +2300,7 @@ mod tests {
     /// A new request arriving during the idle window resets the timer.
     #[tokio::test]
     async fn test_network_idle_resets_on_new_request() {
-        let (tx, mut rx) = broadcast::channel::<CdpEvent>(16);
+        let (tx, mut rx) = broadcast::channel::<Arc<CdpEvent>>(16);
         let session = "s1";
 
         let _keep_alive = tx.clone();
@@ -2354,7 +2354,7 @@ mod tests {
     /// returns an error.
     #[tokio::test]
     async fn test_network_idle_overall_timeout() {
-        let (tx, mut rx) = broadcast::channel::<CdpEvent>(16);
+        let (tx, mut rx) = broadcast::channel::<Arc<CdpEvent>>(16);
         let session = "s1";
 
         // Keep sending requests so idle is never reached

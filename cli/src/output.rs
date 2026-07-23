@@ -2162,13 +2162,14 @@ agent-browser network - Network interception and monitoring
 Usage: agent-browser network <subcommand> [args]
 
 Intercept, mock, or monitor network requests.
+Request tracking retains the newest 1,000 entries so long-running sessions stay bounded.
 
 Subcommands:
   route <url> [options]      Intercept requests matching URL pattern
     --abort                  Abort matching requests
     --body <json>            Respond with custom body
   unroute [url]              Remove route (all if no URL)
-  requests [options]         List captured requests
+  requests [options]         List the newest 1,000 captured requests
     --clear                  Clear request log
     --filter <pattern>       Filter by URL pattern
     --type <types>           Filter by resource type (comma-separated: xhr,fetch,document)

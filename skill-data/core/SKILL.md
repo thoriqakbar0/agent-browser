@@ -317,6 +317,8 @@ agent-browser network har stop /tmp/trace.har
 # `--content all` to include binary bodies or `--content none` to disable.
 ```
 
+The request log retains the newest 1,000 entries. Use `network requests --clear` to release it immediately.
+
 ### Record a video of the workflow
 
 ```bash

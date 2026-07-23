@@ -39,7 +39,7 @@ pub struct CdpClient {
     >,
     next_id: AtomicU64,
     pending: PendingMap,
-    event_tx: broadcast::Sender<CdpEvent>,
+    event_tx: broadcast::Sender<Arc<CdpEvent>>,
     raw_tx: broadcast::Sender<RawCdpMessage>,
     _reader_handle: tokio::task::JoinHandle<()>,
     _keepalive_handle: tokio::task::JoinHandle<()>,
@@ -155,11 +155,11 @@ impl CdpClient {
                     }
                 } else if let Some(method) = parsed.method {
                     // Event
-                    let event = CdpEvent {
+                    let event = Arc::new(CdpEvent {
                         method,
                         params: parsed.params.unwrap_or(Value::Null),
                         session_id: parsed.session_id,
-                    };
+                    });
                     let _ = event_tx_clone.send(event);
                 }
             }
@@ -252,7 +252,7 @@ impl CdpClient {
         Ok(response.result.unwrap_or(Value::Null))
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<CdpEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<CdpEvent>> {
         self.event_tx.subscribe()
     }
 
@@ -387,4 +387,33 @@ fn enable_tcp_keepalive(stream: &tokio_tungstenite::MaybeTlsStream<tokio::net::T
     let keepalive = keepalive.with_interval(std::time::Duration::from_secs(10));
 
     let _ = sock.set_tcp_keepalive(&keepalive);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn event_broadcast_shares_one_payload_across_subscribers() {
+        let (tx, _) = broadcast::channel::<Arc<CdpEvent>>(4);
+        let mut first = tx.subscribe();
+        let mut second = tx.subscribe();
+        let event = Arc::new(CdpEvent {
+            method: "Network.requestWillBeSent".to_string(),
+            params: serde_json::json!({
+                "request": {
+                    "url": "https://example.test",
+                    "headers": { "x-large": "payload" }
+                }
+            }),
+            session_id: Some("session-1".to_string()),
+        });
+
+        tx.send(event.clone()).unwrap();
+        let first_event = first.recv().await.unwrap();
+        let second_event = second.recv().await.unwrap();
+
+        assert!(Arc::ptr_eq(&event, &first_event));
+        assert!(Arc::ptr_eq(&event, &second_event));
+    }
 }

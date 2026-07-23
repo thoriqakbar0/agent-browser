@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -139,6 +139,16 @@ impl HarContentMode {
 const HAR_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Total budget for embedded bodies across one recording session.
 const HAR_MAX_TOTAL_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// The dashboard enables request tracking for every daemon. Keep recent
+/// observability useful without allowing long-running sessions to grow forever.
+const TRACKED_REQUEST_MAX_ENTRIES: usize = 1000;
+
+fn push_tracked_request(requests: &mut VecDeque<TrackedRequest>, request: TrackedRequest) {
+    if requests.len() >= TRACKED_REQUEST_MAX_ENTRIES {
+        requests.pop_front();
+    }
+    requests.push_back(request);
+}
 
 pub struct RouteEntry {
     pub url_pattern: String,
@@ -407,7 +417,7 @@ pub struct DaemonState {
     pub session_id: String,
     pub tracing_state: TracingState,
     pub recording_state: RecordingState,
-    event_rx: Option<broadcast::Receiver<CdpEvent>>,
+    event_rx: Option<broadcast::Receiver<Arc<CdpEvent>>>,
     pub screencasting: bool,
     pub policy: Option<ActionPolicy>,
     pub pending_confirmation: Option<PendingConfirmation>,
@@ -420,7 +430,7 @@ pub struct DaemonState {
     pub confirm_actions: Option<ConfirmActions>,
     pub inspect_server: Option<InspectServer>,
     pub routes: Arc<RwLock<Vec<RouteEntry>>>,
-    pub tracked_requests: Vec<TrackedRequest>,
+    pub tracked_requests: VecDeque<TrackedRequest>,
     pub request_tracking: bool,
     pub active_frame_id: Option<String>,
     /// Cross-origin iframe frame_id → dedicated CDP session_id.
@@ -519,7 +529,7 @@ impl DaemonState {
             confirm_actions: ConfirmActions::from_env(),
             inspect_server: None,
             routes: Arc::new(RwLock::new(Vec::new())),
-            tracked_requests: Vec::new(),
+            tracked_requests: VecDeque::new(),
             request_tracking: false,
             active_frame_id: None,
             iframe_sessions: HashMap::new(),
@@ -1481,21 +1491,24 @@ impl DaemonState {
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
-                                    self.tracked_requests.push(TrackedRequest {
-                                        url,
-                                        method,
-                                        headers,
-                                        timestamp,
-                                        resource_type,
-                                        request_id,
-                                        post_data: request
-                                            .get("postData")
-                                            .and_then(|v| v.as_str())
-                                            .map(String::from),
-                                        status: None,
-                                        response_headers: None,
-                                        mime_type: None,
-                                    });
+                                    push_tracked_request(
+                                        &mut self.tracked_requests,
+                                        TrackedRequest {
+                                            url,
+                                            method,
+                                            headers,
+                                            timestamp,
+                                            resource_type,
+                                            request_id,
+                                            post_data: request
+                                                .get("postData")
+                                                .and_then(|v| v.as_str())
+                                                .map(String::from),
+                                            status: None,
+                                            response_headers: None,
+                                            mime_type: None,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -10117,7 +10130,7 @@ pub fn matches_status_filter(status: Option<i64>, filter: &str) -> bool {
 
 async fn handle_requests(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     if cmd.get("clear").and_then(|v| v.as_bool()).unwrap_or(false) {
-        state.tracked_requests.clear();
+        state.tracked_requests = VecDeque::new();
         return Ok(json!({ "cleared": true }));
     }
 
@@ -11133,9 +11146,72 @@ mod tests {
     use super::super::cdp::types::{AXNode, AXValue};
     use super::*;
     use crate::test_utils::EnvGuard;
+    use proptest::prelude::*;
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn tracked_request(request_id: u16) -> TrackedRequest {
+        TrackedRequest {
+            url: format!("https://example.test/{request_id}"),
+            method: "GET".to_string(),
+            headers: json!({}),
+            timestamp: request_id as u64,
+            resource_type: "Document".to_string(),
+            request_id: request_id.to_string(),
+            post_data: None,
+            status: None,
+            response_headers: None,
+            mime_type: None,
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn tracked_requests_match_a_recent_entries_reference(
+            request_ids in prop::collection::vec(
+                any::<u16>(),
+                0..(TRACKED_REQUEST_MAX_ENTRIES + 512),
+            ),
+        ) {
+            let mut state = DaemonState::new();
+            for request_id in &request_ids {
+                push_tracked_request(
+                    &mut state.tracked_requests,
+                    tracked_request(*request_id),
+                );
+            }
+
+            let expected: Vec<String> = request_ids
+                .iter()
+                .rev()
+                .take(TRACKED_REQUEST_MAX_ENTRIES)
+                .rev()
+                .map(ToString::to_string)
+                .collect();
+            let actual: Vec<String> = state
+                .tracked_requests
+                .iter()
+                .map(|request| request.request_id.clone())
+                .collect();
+
+            prop_assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn clearing_tracked_requests_releases_allocated_queue_storage() {
+        let mut state = DaemonState::new();
+        for request_id in 0..32 {
+            push_tracked_request(&mut state.tracked_requests, tracked_request(request_id));
+        }
+        assert!(state.tracked_requests.capacity() > 0);
+
+        state.tracked_requests = VecDeque::new();
+
+        assert!(state.tracked_requests.is_empty());
+        assert_eq!(state.tracked_requests.capacity(), 0);
+    }
 
     /// `find --help`, the MCP tool schema, and the docs/skill references are
     /// plain text, not generated from `FIND_ACTIONS`; this pins their

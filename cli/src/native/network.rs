@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::cdp::client::CdpClient;
 
@@ -578,25 +578,25 @@ pub struct ErrorEntry {
 }
 
 pub struct EventTracker {
-    pub console_entries: Vec<ConsoleEntry>,
-    pub error_entries: Vec<ErrorEntry>,
+    pub console_entries: VecDeque<ConsoleEntry>,
+    pub error_entries: VecDeque<ErrorEntry>,
     pub max_entries: usize,
 }
 
 impl EventTracker {
     pub fn new() -> Self {
         Self {
-            console_entries: Vec::new(),
-            error_entries: Vec::new(),
+            console_entries: VecDeque::new(),
+            error_entries: VecDeque::new(),
             max_entries: 1000,
         }
     }
 
     pub fn add_console(&mut self, level: &str, text: &str, args: Vec<Value>) {
         if self.console_entries.len() >= self.max_entries {
-            self.console_entries.remove(0);
+            self.console_entries.pop_front();
         }
-        self.console_entries.push(ConsoleEntry {
+        self.console_entries.push_back(ConsoleEntry {
             level: level.to_string(),
             text: text.to_string(),
             args,
@@ -611,9 +611,9 @@ impl EventTracker {
         col: Option<i64>,
     ) {
         if self.error_entries.len() >= self.max_entries {
-            self.error_entries.remove(0);
+            self.error_entries.pop_front();
         }
-        self.error_entries.push(ErrorEntry {
+        self.error_entries.push_back(ErrorEntry {
             text: text.to_string(),
             url: url.map(String::from),
             line,
@@ -622,7 +622,7 @@ impl EventTracker {
     }
 
     pub fn clear_console(&mut self) {
-        self.console_entries.clear();
+        self.console_entries = VecDeque::new();
     }
 
     pub fn get_console_json(&self) -> Value {
@@ -728,6 +728,28 @@ mod tests {
 
         assert_eq!(tracker.console_entries.len(), 1);
         assert_eq!(tracker.error_entries.len(), 1);
+    }
+
+    #[test]
+    fn event_tracker_keeps_the_newest_entries_without_retaining_cleared_capacity() {
+        let mut tracker = EventTracker::new();
+        tracker.max_entries = 2;
+
+        tracker.add_console("log", "first", vec![]);
+        tracker.add_console("log", "second", vec![]);
+        tracker.add_console("log", "third", vec![]);
+
+        let texts: Vec<&str> = tracker
+            .console_entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(texts, ["second", "third"]);
+        assert!(tracker.console_entries.capacity() > 0);
+
+        tracker.clear_console();
+        assert!(tracker.console_entries.is_empty());
+        assert_eq!(tracker.console_entries.capacity(), 0);
     }
 
     #[test]

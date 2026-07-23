@@ -89,7 +89,7 @@ impl std::fmt::Display for CdpError {
 // CDP events (broadcast to subscribers)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CdpEvent {
     pub method: String,
     pub params: Value,

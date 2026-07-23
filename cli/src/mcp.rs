@@ -1137,7 +1137,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_NETWORK_REQUESTS,
             "Network requests",
-            "List captured network requests.",
+            "List the newest 1,000 captured network requests.",
             json!({ "clear": { "type": "boolean" }, "filter": { "type": "string" }, "type": { "type": "string" }, "method": { "type": "string" }, "status": { "type": "string" } }),
             &[],
         ),

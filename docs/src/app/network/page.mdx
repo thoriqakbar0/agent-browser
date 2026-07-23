@@ -40,6 +40,8 @@ agent-browser network request <requestId>
 agent-browser network requests --clear
 ```
 
+The request log retains the newest 1,000 entries so long-running sessions stay memory-bounded. Clearing it releases the retained queue storage immediately.
+
 <table>
   <thead>
     <tr><th>Filter</th><th>Description</th></tr>

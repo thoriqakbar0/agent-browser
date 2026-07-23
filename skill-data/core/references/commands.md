@@ -199,6 +199,8 @@ agent-browser network har start --content none # Sizes and headers only
 agent-browser network har stop [output.har]    # Stop and save HAR
 ```
 
+Request tracking retains the newest 1,000 entries. `network requests --clear` releases the retained log immediately.
+
 ## Tabs and Windows
 
 ```bash
